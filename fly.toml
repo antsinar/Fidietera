@@ -1,0 +1,40 @@
+# fly.toml app configuration file generated for fidiaitera on 2025-03-24T15:44:48+02:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'fidiaitera'
+primary_region = 'ams'
+
+[http_service]
+  internal_port = 8888
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    hard_limit = 30
+    soft_limit = 20
+  [http_service.http_options]
+    idle_timeout = 300
+
+[build]
+  dockerfile = "docker/lab/Dockerfile"
+  ignorefile = ".dockerignore"
+
+[deploy]
+  strategy = "rolling"
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[[mounts]]
+  source = 'student_data'
+  destination = '/home/jovyan/student_data'
+  initial_size = 1
+
+[[restart]]
+  policy = "on-failure"
+  retries = 5
