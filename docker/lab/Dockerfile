@@ -1,22 +1,34 @@
 FROM quay.io/jupyter/base-notebook:lab-4.3.5 AS builder
+
+WORKDIR /build
+
 USER root
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential \
+    acl \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-USER ${NB_UID}
-RUN pip wheel --wheel-dir /usr/src/wheels \
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
+
+RUN uv init && \
+    uv add --no-cache \
     bpython \
     jupyterlab-lsp \
-    'python-lsp-server[all]'
+    'python-lsp-server[rope, pyflakes, pycodestyle, yapf, flake8, pylint]' \
+    jupyterlab-language-pack-el-GR && \
+    find /build/.venv -type d -name "__pycache__" -exec rm -rf {} +
 
 FROM builder AS runner
-ENV PYTHONUNBUFFERED 1
-ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR "${HOME}"
-COPY --from=builder /usr/src/wheels /wheels/
-RUN pip install --no-cache-dir --no-index --find-links=/wheels/ /wheels/* \
-    && rm -rf /wheels/
+
+RUN setfacl -R -m u:jovyan:rwx "${HOME}" && setfacl -d -m u:jovyan:rwx "${HOME}"
+
+COPY --from=builder /build/.venv .venv
+
 EXPOSE 8888
-CMD ["jupyter", "lab"]
+USER jovyan
+ENTRYPOINT [ "/bin/sh", "-c", "PATH=\"${HOME}/.venv/bin:${PATH}\" jupyter lab --ip=0.0.0.0 --port=8888" ]
+CMD [ ]
