@@ -3,3 +3,5 @@
 **\__pycache__
 fly.toml
 .gitignore
+.env
+.ruff_cache/
