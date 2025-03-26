@@ -13,7 +13,7 @@ class MachineService:
     http_options: dict
     autostart: bool = True
     autostop: str = "off"
-    concurrency: dict[str, str|int] = field(
+    concurrency: dict[str, str | int] = field(
         default_factory=lambda: {
             "type": "connections",
             "hard_limit": 30,
@@ -42,12 +42,12 @@ class MachineConfig:
     guest: dict = field(
         default_factory=lambda: {"cpu_kind": "shared", "cpus": 1, "memory_mb": 512}
     )
-    init: dict[str, str|int] = field(
+    init: dict[str, str | int] = field(
         default_factory=lambda: {
             "swap_size_mb": 512,
         }
     )
-    restart: dict[str, str|int] = field(
+    restart: dict[str, str | int] = field(
         default_factory=lambda: {"max_retries": 3, "policy": "on-failure"}
     )
 

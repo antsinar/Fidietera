@@ -141,13 +141,14 @@ def create_volume(student_id: str) -> str | None:
             f"Failed to create volume: \n[Status:{result['status']}] {result.get('error', 'Unknown error')}",
             Color.ERRORRED,
         )
-        return 
+        return
 
     try:
         return result["data"]["id"]
     except KeyError as e:
         pretty_print(e, Color.ERRORRED)
         return
+
 
 def create_machine(student_id: str, volume_id: str) -> Dict[str, str] | None:
     """Create a new machine for the app"""
@@ -179,7 +180,7 @@ def create_machine(student_id: str, volume_id: str) -> Dict[str, str] | None:
             f"Failed to create machine: \n[Status:{result['status']}] {result.get('error', 'Unknown error')}",
             Color.ERRORRED,
         )
-        return 
+        return
 
     return {"instance_id": result["data"]["instance_id"]}
 
@@ -200,7 +201,7 @@ def provision_jupyter(student_id: str):
     volume_id: str | None = create_volume(student_id)
     if not volume_id:
         return
-    
+
     create_machine(student_id, volume_id)
 
     pretty_print(f"[X] Successfully deployed Jupyter instance for {student_id}")
@@ -286,6 +287,7 @@ def main():
             raise NotImplementedError
         case CliCommand.LIST.value:
             import pprint
+
             pprint.pprint(get_machines())
         case CliCommand.BATCH.value:
             raise NotImplementedError
@@ -297,7 +299,7 @@ def main():
 def run_system_checks() -> bool:
     major, minor, _ = platform.python_version_tuple()
     if int(major) != 3 and int(minor) < 9:
-        pretty_print("[X] Python 3.9 or later is required", Color.ERRORRED)
+        pretty_print("[X] Python 3.10 or later is required", Color.ERRORRED)
         return False
     env_file = Path(__file__).parent.parent.parent / ".env"
     if not env_file.exists():
