@@ -6,30 +6,42 @@ This script creates and manages Jupyter Lab instances on Fly.io for students.
 It uses the Fly Machines API directly to create and manage the instances.
 Zero external dependencies - uses only the standard library.
 """
+
 from __future__ import annotations
 
 import os
 import sys
-import secrets
 import json
 import argparse
 import urllib.request
 import urllib.error
 import urllib.parse
+from dataclasses import asdict
 from typing import Dict
 from pathlib import Path
 from enum import Enum
-import time
 import platform
 
+try:
+    sys.path.append(Path(__file__).parent.parent.as_posix())
+    from serverActions.models import (
+        MachineCreate,
+        MachineConfig,
+        MachineMount,
+        MachineService,
+    )
+except Exception as e:
+    print(e)
+    print("[Χ] Could not load modules into path")
+    sys.exit(1)
 
-FLY_ORGANIZATION = os.environ.get("FLY_ORGANIZATION", "")
-BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "")
-JUPYTER_IMAGE = os.environ.get("JUPYTER_IMAGE", "")
-VOLUME_SIZE = os.environ.get("VOLUME_SIZE", "10")
-FLY_API_TOKEN = os.environ.get("FLY_API_TOKEN", "")
-FLY_API_HOST = os.environ.get("FLY_API_HOST", "api.machines.dev")
-FLY_APP_PREFIX = os.environ.get("FLY_APP_PREFIX", "jupyter-")
+essential_keys = [
+    "FLY_ORGANIZATION",
+    "BASE_DOMAIN",
+    "JUPYTER_IMAGE",
+    "FLY_API_TOKEN",
+    "APP_NAME",
+]
 
 
 class Color(str, Enum):
@@ -75,17 +87,9 @@ def make_api_request(
 ) -> Dict[str, str]:
     """Makes an API request to Fly.io Machines API"""
     if not headers:
-        headers = {}
-
-    if not FLY_API_TOKEN:
-        pretty_print(
-            "Error: FLY_API_TOKEN environment variable not set", Color.ERRORRED
-        )
-        pretty_print("Please set it with your Fly.io API token", Color.ERRORRED)
-        sys.exit(1)
-
-    headers["Authorization"] = f"Bearer {FLY_API_TOKEN}"
-    headers["Content-Type"] = "application/json"
+        headers = dict()
+        headers["Authorization"] = f"Bearer {FLY_API_TOKEN}"
+        headers["Content-Type"] = "application/json"
 
     url = f"https://{FLY_API_HOST}{path}"
 
@@ -93,7 +97,7 @@ def make_api_request(
         url=url,
         data=json.dumps(data).encode("utf-8") if data else None,
         headers=headers,
-        method=method.value,
+        method=method,
     )
 
     try:
@@ -123,108 +127,85 @@ def make_api_request(
         return {"status": 500, "error": str(e)}
 
 
-def create_app(app_name) -> None:
-    """Create a new Fly.io app"""
-    data = {"name": app_name, "org_slug": FLY_ORGANIZATION}
-
-    result = make_api_request("POST", "/v1/apps", data)
-
-    if result["status"] not in [200, 201]:
-        pretty_print(
-            f"Failed to create app: {result.get('error', 'Unknown error')}",
-            Color.ERRORRED,
-        )
-        sys.exit(1)
-
-    return
-
-
-def create_volume(app_name, volume_name, size_gb) -> None:
-    """Create a volume for the app"""
-    data = {
-        "name": volume_name,
-        "size_gb": int(size_gb),
-        "region": "iad",
-        "encrypted": True,
-    }
-
-    result = make_api_request("POST", f"/v1/apps/{app_name}/volumes", data)
+def create_volume(student_id: str) -> str | None:
+    data = {"region": "ams", "name": f"vol_{student_id}", "size_gb": 1}
+    result = make_api_request(
+        "POST",
+        f"/v1/apps/{APP_NAME}/volumes",
+        data=data,
+        headers=common_headers,
+    )
 
     if result["status"] not in [200, 201]:
         pretty_print(
-            f"Failed to create volume: {result.get('error', 'Unknown error')}",
+            f"Failed to create volume: \n[Status:{result['status']}] {result.get('error', 'Unknown error')}",
             Color.ERRORRED,
         )
-        sys.exit(1)
+        return 
 
-    time.sleep(2)
-    return
+    try:
+        return result["data"]["id"]
+    except KeyError as e:
+        pretty_print(e, Color.ERRORRED)
+        return
 
-
-def create_machine(app_name, jupyter_token, student_id):
+def create_machine(student_id: str, volume_id: str) -> Dict[str, str] | None:
     """Create a new machine for the app"""
-    data = {
-        "name": f"{FLY_APP_PREFIX}instance",
-        "region": "iad",  # Default region, can be made configurable
-        "config": {
-            "image": JUPYTER_IMAGE,
-            "env": {
-                "JUPYTER_TOKEN": jupyter_token,
-                "STUDENT_ID": student_id,
-            },
-            "services": [
-                {
-                    "ports": [
-                        {"port": 80, "handlers": ["http"]},
-                        {"port": 443, "handlers": ["tls", "http"]},
-                    ],
-                    "protocol": "tcp",
-                    "internal_port": 8888,
-                    "concurrency": {
-                        "type": "connections",
-                        "hard_limit": 25,
-                        "soft_limit": 20,
-                    },
-                }
-            ],
-            "mounts": [{"volume": "user_data", "path": "/home/jovyan/work"}],
-        },
-    }
+    machine_config = MachineConfig(
+        image=JUPYTER_IMAGE,
+        env={"STUDENT_ID": student_id},
+        mounts=[MachineMount(volume=volume_id)],
+        services=[
+            MachineService(
+                internal_port=INTERNAL_PORT,
+                http_options={
+                    "idle_timeout": IDLE_TIMEOUT,
+                    "h2_backend": True,
+                },
+            )
+        ],
+    )
+    data = MachineCreate(name=f"{FLY_APP_PREFIX}{student_id}", config=machine_config)
 
-    result = make_api_request("POST", f"/v1/apps/{app_name}/machines", data)
+    result = make_api_request(
+        "POST",
+        f"/v1/apps/{APP_NAME}/machines",
+        data=asdict(data),
+        headers=common_headers,
+    )
 
     if result["status"] not in [200, 201]:
         pretty_print(
-            f"Failed to create machine: {result.get('error', 'Unknown error')}",
+            f"Failed to create machine: \n[Status:{result['status']}] {result.get('error', 'Unknown error')}",
             Color.ERRORRED,
         )
-        sys.exit(1)
+        return 
 
-    return
+    return {"instance_id": result["data"]["instance_id"]}
 
 
-def provision_jupyter(student_id: str, app_name: str):
+def provision_jupyter(student_id: str):
     """Provision a new Jupyter Lab instance for a student"""
-    jupyter_token = secrets.token_urlsafe()
-    result = make_api_request("GET", f"/v1/apps/{app_name}")
+    app_exists = make_api_request("GET", f"/v1/apps/{APP_NAME}", headers=common_headers)
 
-    if result["status"] == 200:
-        pretty_print(f"[X] Instance for {student_id} already exists", Color.WARNING)
+    if app_exists["status"] != 200:
         pretty_print(
-            f"\tAccess URL: https://{app_name}.{BASE_DOMAIN}/lab?token={jupyter_token}",
-            Color.UNDERLINE,
+            f"Failed to get information about machines; app = {APP_NAME}",
+            Color.ERRORRED,
         )
         return
 
     pretty_print(f"[X] Creating new Jupyter instance for student: {student_id}")
 
-    create_app(app_name)
-    create_volume(app_name, "user_data", VOLUME_SIZE)
-    create_machine(app_name, jupyter_token, student_id)
+    volume_id: str | None = create_volume(student_id)
+    if not volume_id:
+        return
+    
+    create_machine(student_id, volume_id)
 
     pretty_print(f"[X] Successfully deployed Jupyter instance for {student_id}")
     pretty_print(
-        f"\tAccess URL: https://{app_name}.{BASE_DOMAIN}/lab?token={jupyter_token}",
+        f"\tAccess URL: https://{APP_NAME}.{BASE_DOMAIN}/lab?token={student_id}",
         Color.UNDERLINE,
     )
 
@@ -233,139 +214,21 @@ def provision_jupyter(student_id: str, app_name: str):
 
     access_info = {
         "student_id": student_id,
-        "app_name": app_name,
-        "url": f"https://{app_name}.{BASE_DOMAIN}/lab?token={jupyter_token}",
-        "token": jupyter_token,
+        "url": f"https://{APP_NAME}.{BASE_DOMAIN}/lab?token={student_id}",
     }
 
-    with open(config_dir / "access.json", "w") as f:
+    with open(config_dir / "access.json", "+a") as f:
         json.dump(access_info, f, indent=2)
 
 
-def get_machines(app_name: str):
+def get_machines():
     """Get all machines for an app"""
-    result = make_api_request("GET", f"/v1/apps/{app_name}/machines")
+    result = make_api_request("GET", f"/v1/apps/{APP_NAME}/machines")
 
     if result["status"] != 200:
         return list()
 
     return result["data"]
-
-
-def terminate_jupyter(student_id: str, app_name: str):
-    """Stop a student's Jupyter instance"""
-
-    machines = get_machines(app_name)
-    if not machines:
-        pretty_print(f"No running machines found for {student_id}", Color.ERRORRED)
-        return
-
-    for machine in machines:
-        machine_id = machine["id"]
-        result = make_api_request(
-            "POST", f"/v1/apps/{app_name}/machines/{machine_id}/stop"
-        )
-
-        if result["status"] not in [200, 204]:
-            pretty_print(
-                f"Failed to stop machine {machine_id} for {student_id}", Color.ERRORRED
-            )
-
-        pretty_print(f"Successfully stopped machine {machine_id} for {student_id}")
-
-
-def start_jupyter(student_id: str, app_name: str):
-    """Start a previously created but stopped Jupyter instance"""
-
-    app_result = make_api_request("GET", f"/v1/apps/{app_name}")
-    if app_result["status"] != 200:
-        pretty_print(f"No instance found for {student_id}", Color.ERRORRED)
-        return
-
-    machines = get_machines(app_name)
-
-    if machines:
-        for machine in machines:
-            if machine["state"] != "started":
-                machine_id = machine["id"]
-                result = make_api_request(
-                    "POST", f"/v1/apps/{app_name}/machines/{machine_id}/start"
-                )
-
-                if result["status"] not in [200, 204]:
-                    pretty_print(
-                        f"Failed to start machine {machine_id} for {student_id}",
-                        Color.ERRORRED,
-                    )
-
-                pretty_print(
-                    f"Successfully started machine {machine_id} for {student_id}"
-                )
-
-    else:
-        config_dir = Path(__file__).parent / f".fly-configs/{student_id}"
-        access_file = config_dir / "access.json"
-
-        if access_file.exists():
-            with open(access_file, "r") as f:
-                access_info = json.load(f)
-                jupyter_token = access_info.get("token", secrets.token_urlsafe())
-                create_machine(app_name, jupyter_token, student_id)
-                pretty_print(f"Successfully recreated machine for {student_id}")
-        else:
-            jupyter_token = secrets.token_urlsafe()
-            create_machine(app_name, jupyter_token, student_id)
-            pretty_print(f"Created new machine for {student_id} with new token")
-
-
-def delete_jupyter(student_id, app_name: str):
-    """Completely remove a student's Jupyter instance"""
-
-    confirm = input(
-        f"{Color.WARNING}Are you sure you want to delete the instance for {student_id}? (y/N): {Color.ENDC}"
-    )
-    if confirm.lower() != "y":
-        pretty_print("Operation canceled", Color.WARNING)
-        return
-
-    result = make_api_request("DELETE", f"/v1/apps/{app_name}")
-
-    if result["status"] not in [200, 204]:
-        pretty_print(
-            f"Failed to delete instance for {student_id}: {result.get('error', 'Unknown error')}",
-            Color.ERRORRED,
-        )
-    pretty_print(f"Successfully deleted instance for {student_id}")
-
-
-def list_instances():
-    """List all Jupyter instances"""
-    result = make_api_request("GET", "/v1/apps")
-
-    if result["status"] != 200:
-        pretty_print("Failed to list apps", Color.ERRORRED)
-        return
-
-    apps = result["data"]
-    jupyter_instances = [app for app in apps if app["name"].startswith(FLY_APP_PREFIX)]
-
-    if not jupyter_instances:
-        pretty_print("No Jupyter instances found", Color.WARNING)
-        return
-
-    pretty_print("Jupyter instances:")
-    for instance in jupyter_instances:
-        student_id = instance["name"].replace(FLY_APP_PREFIX, "")
-
-        machines = get_machines(instance["name"])
-        status = "unavailable"
-        if machines:
-            status = machines[0]["state"]
-
-        pretty_print(
-            f"Student: {student_id}, App: {instance['name']}, Status: {status}",
-            Color.UNDERLINE,
-        )
 
 
 def main():
@@ -414,45 +277,75 @@ def main():
 
     match args.command:
         case CliCommand.PROVISION.value:
-            provision_jupyter(
-                args.student_id,
-                args.course_id,
-                args.resource_limit,
-                f"{FLY_APP_PREFIX}{student_id}",
-            )
+            provision_jupyter(args.student_id)
         case CliCommand.STOP.value:
-            terminate_jupyter(args.student_id, f"{FLY_APP_PREFIX}{student_id}")
+            raise NotImplementedError
         case CliCommand.START.value:
-            start_jupyter(args.student_id, f"{FLY_APP_PREFIX}{student_id}")
+            raise NotImplementedError
         case CliCommand.DELETE.value:
-            delete_jupyter(args.student_id, f"{FLY_APP_PREFIX}{student_id}")
+            raise NotImplementedError
         case CliCommand.LIST.value:
-            list_instances()
+            import pprint
+            pprint.pprint(get_machines())
         case CliCommand.BATCH.value:
-            with open(args.file, "r") as f:
-                for line in f:
-                    if line.strip() and not line.startswith("#"):
-                        parts = line.strip().split(",")
-                        if len(parts) < 2:
-                            pretty_print(
-                                f"Invalid line format: {line.strip()}", Color.ERRORRED
-                            )
-                            continue
-                        student_id = parts[0]
-                        resource_limit = parts[2] if len(parts) > 2 else "standard"
-                        pretty_print(f"Provisioning for {student_id}")
-                        provision_jupyter(student_id, f"{FLY_APP_PREFIX}{student_id}")
+            raise NotImplementedError
 
         case _:
             parser.print_help()
 
 
-if __name__ == "__main__":
+def run_system_checks() -> bool:
     major, minor, _ = platform.python_version_tuple()
     if int(major) != 3 and int(minor) < 9:
         pretty_print("[X] Python 3.9 or later is required", Color.ERRORRED)
-        sys.exit(1)
-    if not (FLY_ORGANIZATION and BASE_DOMAIN and JUPYTER_IMAGE and FLY_API_TOKEN):
+        return False
+    env_file = Path(__file__).parent.parent.parent / ".env"
+    if not env_file.exists():
+        pretty_print("[X] .env file not found", Color.ERRORRED)
+        return False
+    with open(env_file.as_posix(), "r") as f:
+        for line in f.readlines():
+            line = line.strip()
+            if line.startswith("#") or not line:
+                continue
+            key, value = line.split("=", 1)
+            if key not in essential_keys:
+                continue
+            os.environ[key] = value
+    if not all(os.environ.get(key) for key in essential_keys):
         pretty_print("[X] Missing required environment variables", Color.ERRORRED)
+        return False
+    return True
+
+
+if __name__ == "__main__":
+    if not run_system_checks():
         sys.exit(1)
-    main()
+    FLY_ORGANIZATION = os.environ.get("FLY_ORGANIZATION", "")
+    BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "")
+    JUPYTER_IMAGE = os.environ.get("JUPYTER_IMAGE", "")
+    VOLUME_SIZE = os.environ.get("VOLUME_SIZE", "1")
+    FLY_API_TOKEN = os.environ.get("FLY_API_TOKEN", "")
+    FLY_API_HOST = os.environ.get("FLY_API_HOST", "api.machines.dev")
+    FLY_APP_PREFIX = os.environ.get("FLY_APP_PREFIX", "jupyter-")
+    APP_NAME = os.environ.get("APP_NAME", "")
+    try:
+        INTERNAL_PORT = int(os.environ.get("INTERNAL_PORT", "8888"))
+        IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "300"))
+    except ValueError:
+        pretty_print(
+            "[X] Invalid value for INTERNAL_PORT or IDLE_TIMEOUT", Color.ERRORRED
+        )
+        sys.exit(1)
+
+    common_headers = {
+        "User-Agent": "Fidiaitera-Provision/0.1",
+        "Authorization": f"Bearer {FLY_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        main()
+    except NotImplementedError:
+        pretty_print("[X] Command not implemented", Color.ERRORRED)
+        sys.exit(1)
